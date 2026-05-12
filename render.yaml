@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: sms-cleaner-bot
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: PORT
+        value: 8080
+    autoDeploy: true
