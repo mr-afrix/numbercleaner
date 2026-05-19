@@ -156,9 +156,10 @@ async def membership(bot, uid: int) -> list:
     return out
 
 async def gate_keyboard(bot, uid: int) -> InlineKeyboardMarkup:
-    rows    = []
-    joined  = 0
-    total   = len(CHANNELS)
+    statuses = []
+    joined   = 0
+    total    = len(CHANNELS)
+
     for ch in CHANNELS:
         try:
             m  = await bot.get_chat_member(ch["id"], uid)
@@ -167,50 +168,75 @@ async def gate_keyboard(bot, uid: int) -> InlineKeyboardMarkup:
             ok = False
         if ok:
             joined += 1
-        dot = "🟢" if ok else "🔴"
-        rows.append([InlineKeyboardButton(
-            f"{dot} {ch['num']} {ch['label']}",
-            url=f"https://t.me/{ch['slug']}"
-        )])
+        statuses.append((ch, ok))
+
+    rows = []
+
+    # ── channels: pair them side-by-side, last one alone if odd count ──
+    i = 0
+    while i < len(statuses):
+        ch1, ok1 = statuses[i]
+        dot1 = "✅" if ok1 else "🔴"
+        btn1 = InlineKeyboardButton(
+            f"{dot1} {ch1['num']} {ch1['label']}",
+            url=f"https://t.me/{ch1['slug']}"
+        )
+        if i + 1 < len(statuses):
+            ch2, ok2 = statuses[i + 1]
+            dot2 = "✅" if ok2 else "🔴"
+            btn2 = InlineKeyboardButton(
+                f"{dot2} {ch2['num']} {ch2['label']}",
+                url=f"https://t.me/{ch2['slug']}"
+            )
+            rows.append([btn1, btn2])
+            i += 2
+        else:
+            rows.append([btn1])
+            i += 1
+
+    # ── OTP bot: full row, own space ──
     rows.append([InlineKeyboardButton(
         f"🟣 {OTP['label']}",
         url=f"https://t.me/{OTP['slug']}"
     )])
+
+    # ── verify: last row, alone, no sharing ──
     bar = pbar(joined, total)
     rows.append([InlineKeyboardButton(
-        f"🔵 [{bar}] {joined}/{total}  ·  {sc('verify')}",
+        f"🔵 [{bar}] {joined}/{total}  ·  {sc('verify')} ✦",
         callback_data="recheck"
     )])
+
     return InlineKeyboardMarkup(rows)
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(sc("send file"),       callback_data="menu:info")],
+        [InlineKeyboardButton("📂 " + sc("send file"),         callback_data="menu:info")],
         [
-            InlineKeyboardButton(sc("add channel"),    callback_data="menu:addch"),
-            InlineKeyboardButton(sc("remove channel"), callback_data="menu:rmch"),
+            InlineKeyboardButton("🟢 " + sc("add channel"),    callback_data="menu:addch"),
+            InlineKeyboardButton("🔴 " + sc("remove channel"), callback_data="menu:rmch"),
         ],
     ])
 
 def back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(sc("back"), callback_data="menu:back")
+        InlineKeyboardButton("⬅️ " + sc("back"), callback_data="menu:back")
     ]])
 
 def retry_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(sc("try again"), callback_data="menu:back")
+        InlineKeyboardButton("🔁 " + sc("try again"), callback_data="menu:back")
     ]])
 
 def fmt_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton(sc("with +"),  callback_data="send:plus"),
-        InlineKeyboardButton(sc("no +"),    callback_data="send:bare"),
-    ]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 " + sc("with +"), callback_data="send:plus"),
+         InlineKeyboardButton("🔴 " + sc("no +"),   callback_data="send:bare")],
+    ])
 
 def again_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(sc("process another file"), callback_data="menu:back")
+        InlineKeyboardButton("🔄 " + sc("process another file"), callback_data="menu:back")
     ]])
 
 def build_summary(result: dict) -> str:
@@ -487,20 +513,40 @@ async def cmd_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         sorted_groups = sorted(groups.items(), key=lambda x: -len(x[1]["numbers"]))
 
-        for idx, (iso, v) in enumerate(sorted_groups):
-            nums    = [f"+{n}" if use_plus else n for n in v["numbers"]]
-            buf     = io.BytesIO("\n".join(nums).encode())
-            fname   = f"{v['name'].upper().replace(' ', '_')}.txt"
-            caption = (
+        # build full list of files to send: country groups + unknown
+        all_files = []
+        for iso, v in sorted_groups:
+            nums  = [f"+{n}" if use_plus else n for n in v["numbers"]]
+            buf   = io.BytesIO("\n".join(nums).encode())
+            fname = f"{v['name'].upper().replace(' ', '_')}.txt"
+            cap   = (
                 f"{iso_to_flag(iso)} {sc(v['name'].upper())}\n"
                 f"{sc('country code')}  ›  +{v['dial']}\n"
                 f"{sc('total numbers')}  ›  {len(nums)}"
             )
-            await ctx.bot.send_document(chat_id=uid, document=buf, filename=fname, caption=caption)
+            all_files.append((buf, fname, cap))
+
+        if unknown:
+            nums  = [f"+{n}" if use_plus else n for n in unknown]
+            buf   = io.BytesIO("\n".join(nums).encode())
+            cap   = f"🏳 {sc('UNKNOWN')}\n{sc('total numbers')}  ›  {len(nums)}"
+            all_files.append((buf, "UNKNOWN.txt", cap))
+
+        last_idx = len(all_files) - 1
+        for i, (buf, fname, cap) in enumerate(all_files):
+            is_last = (i == last_idx)
+            kb      = again_kb() if is_last else None
+            await ctx.bot.send_document(
+                chat_id=uid,
+                document=buf,
+                filename=fname,
+                caption=cap,
+                reply_markup=kb
+            )
             if linked:
                 buf.seek(0)
                 try:
-                    await ctx.bot.send_document(chat_id=linked, document=buf, filename=fname, caption=caption)
+                    await ctx.bot.send_document(chat_id=linked, document=buf, filename=fname, caption=cap)
                 except TelegramError:
                     pass
             sent += 1
@@ -511,23 +557,10 @@ async def cmd_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             await asyncio.sleep(0.25)
 
-        if unknown:
-            nums    = [f"+{n}" if use_plus else n for n in unknown]
-            buf     = io.BytesIO("\n".join(nums).encode())
-            caption = f"🏳 {sc('UNKNOWN')}\n{sc('total numbers')}  ›  {len(nums)}"
-            await ctx.bot.send_document(chat_id=uid, document=buf, filename="UNKNOWN.txt", caption=caption)
-            if linked:
-                buf.seek(0)
-                try:
-                    await ctx.bot.send_document(chat_id=linked, document=buf, filename="UNKNOWN.txt", caption=caption)
-                except TelegramError:
-                    pass
-
         ctx.user_data.pop("result", None)
         await prog.edit_text(
             f"`[{pbar(10)}]` ✦ {sc('done')}  ·  {sent} {sc('file(s) sent')}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=again_kb()
+            parse_mode=ParseMode.MARKDOWN
         )
 
 class _Health(BaseHTTPRequestHandler):
